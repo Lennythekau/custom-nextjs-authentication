@@ -4,84 +4,78 @@ import { z } from "zod"
 import { redirect } from "next/navigation"
 import { signInSchema, signUpSchema } from "./schemas"
 import { db } from "@/drizzle/db"
-import { OAuthProvider, UserTable } from "@/drizzle/schema"
+import { UserTable } from "@/drizzle/schema"
 import { eq } from "drizzle-orm"
-import {
-  comparePasswords,
-  generateSalt,
-  hashPassword,
-} from "../core/passwordHasher"
-import { cookies } from "next/headers"
+import { comparePasswords, generateSalt, hashPassword } from "../core/passwordHasher"
 import { createUserSession, removeUserFromSession } from "../core/session"
-import { getOAuthClient } from "../core/oauth/base"
+import { cookies } from "next/headers"
+
+const UNABLE_TO_CREATE_ACCOUNT_MESSAGE = "Unable to create account";
+const UNABLE_TO_LOGIN_MESSAGE = "Unable to create account";
 
 export async function signIn(unsafeData: z.infer<typeof signInSchema>) {
   const { success, data } = signInSchema.safeParse(unsafeData)
 
-  if (!success) return "Unable to log you in"
+  if (!success) return UNABLE_TO_LOGIN_MESSAGE;
 
   const user = await db.query.UserTable.findFirst({
     columns: { password: true, salt: true, id: true, email: true, role: true },
-    where: eq(UserTable.email, data.email),
+    where: eq(UserTable.email, data.email)
   })
 
-  if (user == null || user.password == null || user.salt == null) {
-    return "Unable to log you in"
+  if (user == null) {
+    return UNABLE_TO_LOGIN_MESSAGE;
   }
 
   const isCorrectPassword = await comparePasswords({
-    hashedPassword: user.password,
+    hashedPassword: user.password!,
     password: data.password,
-    salt: user.salt,
+    salt: user.salt!
   })
 
-  if (!isCorrectPassword) return "Unable to log you in"
+  if (!isCorrectPassword) return UNABLE_TO_LOGIN_MESSAGE;
 
-  await createUserSession(user, await cookies())
+  await createUserSession(user, await cookies());
 
   redirect("/")
 }
 
 export async function signUp(unsafeData: z.infer<typeof signUpSchema>) {
-  const { success, data } = signUpSchema.safeParse(unsafeData)
+  // validate data
+  const { success, data } = signUpSchema.safeParse(unsafeData);
+  if (!success) return UNABLE_TO_CREATE_ACCOUNT_MESSAGE;
 
-  if (!success) return "Unable to create account"
-
-  const existingUser = await db.query.UserTable.findFirst({
-    where: eq(UserTable.email, data.email),
-  })
-
-  if (existingUser != null) return "Account already exists for this email"
+  // ensure we don't already have a user with this email.
+  const existingUser = await db.query.UserTable.findFirst({ where: eq(UserTable.email, data.email) });
+  if (existingUser != null) return "Account already exists for this email";
 
   try {
-    const salt = generateSalt()
-    const hashedPassword = await hashPassword(data.password, salt)
+    // generate a salt for a hash
+    const salt = generateSalt();
+    const hashedPassword = await hashPassword(data.password, salt);
 
+    // save the user into the database.
     const [user] = await db
       .insert(UserTable)
       .values({
         name: data.name,
         email: data.email,
         password: hashedPassword,
-        salt,
+        salt
       })
-      .returning({ id: UserTable.id, role: UserTable.role })
+      .returning({ id: UserTable.id, role: UserTable.role });
 
-    if (user == null) return "Unable to create account"
-    await createUserSession(user, await cookies())
+    if (user == null) return UNABLE_TO_CREATE_ACCOUNT_MESSAGE;
+    // if successful, then create a session in the database.
+    await createUserSession(user, await cookies());
   } catch {
-    return "Unable to create account"
+    return UNABLE_TO_CREATE_ACCOUNT_MESSAGE;
   }
 
-  redirect("/")
+  redirect("/");
 }
 
 export async function logOut() {
-  await removeUserFromSession(await cookies())
-  redirect("/")
-}
-
-export async function oAuthSignIn(provider: OAuthProvider) {
-  const oAuthClient = getOAuthClient(provider)
-  redirect(oAuthClient.createAuthUrl(await cookies()))
+  await removeUserFromSession(await cookies());
+  redirect("/");
 }
